@@ -34,6 +34,30 @@ lab.link(sw, "FastEthernet0/1", pc, "FastEthernet0")
 lab.save("my_lab.pkt")            # open in Packet Tracer — no Packet Tracer used to build it
 ```
 
+Cable links created with `Lab.link()` are labeled on the Packet Tracer
+workspace by default. Each note shows both endpoint device/interface names and
+the subnet inferred from the configured interface (including access-VLAN SVIs).
+Use `subnet="10.0.0.0/30"` to override discovery, `label_position=(x, y)` to
+place a note manually, or `annotate=False` on a link / `annotate_links=False`
+on `Lab` to disable labels.
+
+Repository-wide topology, cabling, module, and labeling conventions are in
+[docs/LAB_AUTHORING_DEFAULTS.md](docs/LAB_AUTHORING_DEFAULTS.md).
+Learning labs generated with the lab-design workflow go in
+`/Users/george/Desktop/PTLABS/Learning Labs`, grouped into incrementally
+numbered folders with the learner file, guide, and configured `_COMPLETED`
+reference copy and a matching completed-state SVG network diagram together.
+Other generated labs belong in
+`/Users/george/Desktop/PTLABS/Generated Labs`.
+Fully configured test labs go there in their own `YYYY-MM-DD <Short Summary>`
+folder, containing the finalized Packet Tracer file and a matching
+`_TOPOLOGY.svg` diagram.
+
+For an end-to-end workflow that turns a written scenario into a validated
+`.pkt` lab or scored `.pka` activity, use the
+[Packet Tracer lab design skill](.github/skills/packet-tracer-lab-design/SKILL.md)
+in Copilot Chat.
+
 ...or one-shot from a topology spec (devices + links → a scored, password-protected activity):
 
 ```console
@@ -301,4 +325,3 @@ already permits commercial use.
 Earlier releases of this project were distributed under a non-commercial
 licence. That is no longer the case, and the GPL is the only licence that
 applies from the commit that added it onwards.
-

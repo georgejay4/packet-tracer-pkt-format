@@ -638,10 +638,11 @@ saw `POWER` at all was satisfied.
 
 ### Rule 7 — a cable is not a configuration
 
-**Project watermark:** Every IOS router and switch saved through
-`tools/lab_api.py` must carry `ip domain-name gjay.co.uk` in its running
-configuration. The save path enforces this even when a generator rewrites a
-device's config directly; do not replace it with a per-lab domain.
+**IOS identity default:** Every IOS router and switch saved through
+`tools/lab_api.py` gets a hostname matching its Packet Tracer display name.
+Neither `ip domain-name` nor `no ip domain-name` belongs in a device's default
+configuration; domain-name configuration should only be added when a lab
+explicitly requires it.
 
 > **`lab_api.link()` draws a cable and sets the port's electrical properties. It
 > does not give the interface a state.**

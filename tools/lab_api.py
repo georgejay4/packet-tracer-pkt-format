@@ -16,7 +16,8 @@ Verified capabilities
 *   ios_config=[...]                    <ENGINE><RUNNINGCONFIG><LINE>…  applied on load
 *   pc_ip=(ip,mask,gw)                  NIC <IP>/<SUBNET>/<PORT_GATEWAY>
 * install_module(dev, module, bay=0)    fill an empty <SLOT> with a <MODULE>
-* link(a, aport, b, bport, kind=…)      copper eCopper/eStraightThrough, serial eSerial
+* link(a, aport, b, bport, kind=…)      copper/serial cable with a workspace note
+* annotate_links=False                  opt out of automatic cable notes
 * device_names()                        names in use (seed + added); see Naming below
 * prune_seed_devices()                  drop the devices inherited from the seed
 * save(path)
@@ -51,6 +52,7 @@ import json
 import re
 import copy
 import hashlib
+import ipaddress
 import math
 import sys
 import uuid
@@ -238,7 +240,6 @@ def kind_for_model(model: str) -> str:
     return "default"
 
 
-IOS_DOMAIN_NAME = "gjay.co.uk"
 _IOS_DEVICE_KINDS = {"router", "switch", "multilayer-switch"}
 _DEVICE_NAME_PREFIXES = {
     "router": "R",
@@ -247,8 +248,8 @@ _DEVICE_NAME_PREFIXES = {
 }
 
 
-def ensure_ios_domain_name(device):
-    """Stamp IOS routers and switches with the project's fixed domain name."""
+def ensure_ios_hostname(device):
+    """Align an IOS router or switch hostname and omit domain-name config."""
     engine = device.find("ENGINE")
     if engine is None:
         return
@@ -260,19 +261,28 @@ def ensure_ios_domain_name(device):
     config = engine.find("RUNNINGCONFIG")
     if config is None:
         config = ET.SubElement(engine, "RUNNINGCONFIG")
-    lines = [line for line in config.findall("LINE")
-             if not re.match(r"ip domain-name(?:\s|$)", (line.text or "").strip(), re.I)]
+    name = (engine.findtext("NAME") or "").strip()
+    existing = config.findall("LINE")
     hostname_index = next(
-        (i for i, line in enumerate(lines)
-         if (line.text or "").strip().lower().startswith("hostname ")),
-        -1,
+        (i for i, line in enumerate(existing)
+         if re.match(r"hostname(?:\s|$)", (line.text or "").strip(), re.I)),
+        len(existing),
     )
-    domain_line = ET.Element("LINE")
-    domain_line.text = f"ip domain-name {IOS_DOMAIN_NAME}"
-    lines.insert(hostname_index + 1, domain_line)
+
+    def is_identity_line(line):
+        text = (line.text or "").strip()
+        return (
+            re.match(r"hostname(?:\s|$)", text, re.I)
+            or re.match(r"(?:no\s+)?ip domain-name(?:\s|$)", text, re.I)
+        )
+
+    before = [line for line in existing[:hostname_index] if not is_identity_line(line)]
+    after = [line for line in existing[hostname_index:] if not is_identity_line(line)]
+    hostname_line = ET.Element("LINE")
+    hostname_line.text = f"hostname {name}"
     for line in list(config):
         config.remove(line)
-    config.extend(lines)
+    config.extend(before + [hostname_line] + after)
 
 
 def device_box(kind: str, name: str, model_caption: str) -> tuple[int, int]:
@@ -632,7 +642,7 @@ def _det_uuid(*parts: object) -> str:
 
 
 class Lab:
-    def __init__(self, seed_pkt, models, modules=None):
+    def __init__(self, seed_pkt, models, modules=None, annotate_links: bool = True):
         seed = open(seed_pkt, "rb").read()
         xml = pt9.decode_bytes(seed, "pkt") if seed_pkt.lower().endswith(".pkt") else seed
         self.base = ET.fromstring(xml)
@@ -640,6 +650,7 @@ class Lab:
         self.devs = self.net.find("DEVICES")
         self.models = models
         self.modules = modules or {}
+        self.annotate_links = annotate_links
         self._pw = self.base.find("PHYSICALWORKSPACE")
         self._wsroot = self._pw.find("NODE") if self._pw is not None else None
 
@@ -663,6 +674,7 @@ class Lab:
         self._pos = 4
         self._mac = 0x2000
         self._els = {}
+        self._link_notes = []
 
     # -- physical workspace helpers ---------------------------------------- #
     def _find_container(self, cid):
@@ -732,6 +744,19 @@ class Lab:
         self._mac += 1
         n = self._mac
         return "%04X.%04X.%04X" % (0x0212, (n >> 16) & 0xFFFF, n & 0xFFFF)
+
+    def _assign_port_macs(self, element):
+        """Assign unique burned-in MACs without creating IOS MAC overrides."""
+        for port in element.iter("PORT"):
+            mac = port.find("MACADDRESS")
+            bia = port.find("BIA")
+            if mac is None and bia is None:
+                continue
+            address = self._next_mac()
+            if bia is not None:
+                bia.text = address
+            if mac is not None:
+                mac.text = bia.text if bia is not None else address
 
     def device_names(self) -> list[str]:
         """Return the names of every device currently in the lab, in document
@@ -805,9 +830,7 @@ class Lab:
         cpur = self._make_cpur(px, leaf)
         s = re.sub(r"(<PHYSICAL>[^<]*</PHYSICAL>)", lambda m: m.group(1) + cpur, s, count=1)
         el = ET.fromstring(s)
-        for tag in ("MACADDRESS", "BIA"):
-            for e in el.iter(tag):
-                e.text = self._next_mac()
+        self._assign_port_macs(el)
         eng = el.find("ENGINE")
         for e in list(eng.findall("SAVE_REF_ID")):
             eng.remove(e)
@@ -835,7 +858,7 @@ class Lab:
             rc = ET.SubElement(eng, "RUNNINGCONFIG")
             for L in ios_config:
                 ET.SubElement(rc, "LINE").text = L
-        ensure_ios_domain_name(el)
+        ensure_ios_hostname(el)
         if pc_ip:
             port = el.find(".//PORT")
             for tag, val in (("IP", pc_ip[0]), ("SUBNET", pc_ip[1]),
@@ -902,9 +925,7 @@ class Lab:
             target = empties[0]
 
         mod = ET.fromstring(self.modules[module_model])
-        for tag in ("MACADDRESS", "BIA"):
-            for e in mod.iter(tag):
-                e.text = self._next_mac()
+        self._assign_port_macs(mod)
         for c in list(target):
             target.remove(c)
         for c in list(mod):
@@ -952,11 +973,135 @@ class Lab:
                 e = ET.SubElement(p, tag)
             e.text = val
 
-    def link(self, a_id, a_port, b_id, b_port, kind="copper", dce=None, dce_port=None, clock=128000):
+    def _device(self, dev_id):
+        device = self._els.get(dev_id)
+        if device is not None:
+            return device
+        return next(
+            (el for el in self.devs.findall("DEVICE")
+             if el.findtext("ENGINE/SAVE_REF_ID") == dev_id),
+            None,
+        )
+
+    def _interface_subnet(self, dev_id, port_name):
+        device = self._device(dev_id)
+        if device is None:
+            return None
+        engine = device.find("ENGINE")
+        config = engine.find("RUNNINGCONFIG") if engine is not None else None
+        interface = None
+        blocks = {}
+        for line_el in config.findall("LINE") if config is not None else ():
+            line = (line_el.text or "").strip()
+            if line.lower().startswith("interface "):
+                interface = line.split(None, 1)[1]
+                blocks[interface] = []
+            elif interface is not None:
+                blocks[interface].append(line)
+
+        block = blocks.get(port_name, [])
+        for line in block:
+            match = re.match(r"ip address\s+(\S+)\s+(\S+)$", line, re.I)
+            if match:
+                try:
+                    return ipaddress.ip_interface(
+                        f"{match.group(1)}/{match.group(2)}"
+                    ).network
+                except ValueError:
+                    return None
+
+        vlan = None
+        for line in block:
+            match = re.match(r"switchport access vlan\s+(\d+)$", line, re.I)
+            if match:
+                vlan = match.group(1)
+                break
+        if vlan is not None:
+            return self._interface_subnet(dev_id, f"Vlan{vlan}")
+
+        # End devices store their IPv4 address and mask on the NIC port.
+        for port in device.iter("PORT"):
+            address = port.findtext("IP")
+            mask = port.findtext("SUBNET")
+            if address and mask:
+                try:
+                    return ipaddress.ip_interface(f"{address}/{mask}").network
+                except ValueError:
+                    return None
+        return None
+
+    def _link_note_text(self, a_id, a_port, b_id, b_port, subnet=None):
+        a_device = self._device(a_id)
+        b_device = self._device(b_id)
+        a_name = a_device.findtext("ENGINE/NAME") if a_device is not None else a_id
+        b_name = b_device.findtext("ENGINE/NAME") if b_device is not None else b_id
+        resolved_subnet = subnet or self._interface_subnet(a_id, a_port)
+        if resolved_subnet is None:
+            resolved_subnet = self._interface_subnet(b_id, b_port)
+        lines = [f"{a_name} {a_port} <-> {b_name} {b_port}"]
+        if resolved_subnet is not None:
+            lines.append(str(resolved_subnet))
+        return "\n".join(lines)
+
+    def _link_note_position(self, a_id, b_id, index):
+        def coordinates(dev_id):
+            device = self._device(dev_id)
+            workspace = device.find("WORKSPACE/LOGICAL") if device is not None else None
+            try:
+                return float(workspace.findtext("X")), float(workspace.findtext("Y"))
+            except (AttributeError, TypeError, ValueError):
+                return None
+
+        a_pos = coordinates(a_id)
+        b_pos = coordinates(b_id)
+        if a_pos is None or b_pos is None:
+            return 60 + (index % 5) * 180, 60 + (index // 5) * 70
+
+        dx, dy = b_pos[0] - a_pos[0], b_pos[1] - a_pos[1]
+        length = math.hypot(dx, dy)
+        if length == 0:
+            return a_pos[0], a_pos[1] + 36 + index * 24
+        side = 1 if index % 2 == 0 else -1
+        offset = 28 + (index // 2) * 18
+        return (
+            (a_pos[0] + b_pos[0]) / 2 - dy / length * offset * side,
+            (a_pos[1] + b_pos[1]) / 2 + dx / length * offset * side,
+        )
+
+    def _add_link_note(self, a_id, a_port, b_id, b_port, subnet=None, position=None):
+        index = len(self._link_notes)
+        x, y = position or self._link_note_position(a_id, b_id, index)
+        notes = self._pw.find("NOTES")
+        if notes is None:
+            notes = ET.SubElement(self._pw, "NOTES")
+        note = ET.SubElement(
+            notes,
+            "NOTE",
+            {"uuid": "{%s}" % _det_uuid(
+                "link-note", index, a_id, a_port, b_id, b_port
+            )},
+        )
+        for tag, value in (
+            ("X", round(x)),
+            ("Y", round(y)),
+            ("Z", 40000 + index),
+            ("TEXT", self._link_note_text(a_id, a_port, b_id, b_port, subnet)),
+            ("NOTECLUSTERID", "1-1"),
+        ):
+            ET.SubElement(note, tag).text = str(value)
+        return note
+
+    def link(self, a_id, a_port, b_id, b_port, kind="copper", dce=None, dce_port=None,
+             clock=128000, *, annotate: bool | None = None,
+             subnet: str | None = None,
+             label_position: tuple[float, float] | None = None):
         """Add a cable.  kind='copper' (eCopper/eStraightThrough) or
         'serial' (eSerial; pass dce=<device id of the DCE end>).  For a serial
         link the DCE interface is given a `clock rate` automatically (without it
-        the line stays down / the cable renders red)."""
+        the line stays down / the cable renders red). By default, add a native
+        workspace note showing both endpoint interfaces and the configured
+        subnet. `annotate=False` disables the note; `subnet` overrides automatic
+        subnet discovery, and `label_position=(x, y)` overrides its placement."""
         L = ET.SubElement(self.net.find("LINKS"), "LINK")
         ET.SubElement(L, "TYPE").text = "eCopper" if kind == "copper" else ("eSerial" if kind == "serial" else None)
         cab = ET.SubElement(L, "CABLE")
@@ -981,6 +1126,20 @@ class Lab:
             raise ValueError("kind must be 'copper' or 'serial'")
         for t, v in fields:
             ET.SubElement(cab, t).text = v
+        should_annotate = self.annotate_links if annotate is None else annotate
+        if should_annotate:
+            note = self._add_link_note(
+                a_id, a_port, b_id, b_port, subnet, label_position
+            )
+            self._link_notes.append((note, a_id, a_port, b_id, b_port, subnet))
+
+    def _refresh_link_notes(self):
+        for note, a_id, a_port, b_id, b_port, subnet in self._link_notes:
+            text = note.find("TEXT")
+            if text is not None:
+                text.text = self._link_note_text(
+                    a_id, a_port, b_id, b_port, subnet
+                )
 
     def set_os(self, dev_id, image=None, file_name=None):
         """Set a device's OS image / boot file (`<OS_IMAGE>`, `<OS_FILE_NAME>`)."""
@@ -1059,6 +1218,14 @@ class Lab:
             if el in list(self.devs):
                 self.devs.remove(el)
         links = self.net.find("LINKS")
+        if dead:
+            for record in list(self._link_notes):
+                note, a_id, _a_port, b_id, _b_port, _subnet = record
+                if a_id in dead or b_id in dead:
+                    parent = self._pw.find("NOTES")
+                    if parent is not None and note in list(parent):
+                        parent.remove(note)
+                    self._link_notes.remove(record)
         if links is not None and dead:
             for L in list(links.findall("LINK")):
                 cab = L.find("CABLE")
@@ -1082,8 +1249,9 @@ class Lab:
     drop_seed_devices = prune_seed_devices
 
     def save(self, path):
+        self._refresh_link_notes()
         for device in self.devs.findall("DEVICE"):
-            ensure_ios_domain_name(device)
+            ensure_ios_hostname(device)
         pt9.encode(path, ET.tostring(self.base, encoding="unicode").encode("utf-8"), "pkt")
 
 

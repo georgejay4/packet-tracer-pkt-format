@@ -13,6 +13,7 @@ for a clean workspace.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -98,15 +99,58 @@ def test_explicit_device_name_overrides_convention(lab):
     assert lab._els[switch].findtext("ENGINE/NAME") == "DIST-SW"
 
 
+def test_generated_ports_use_unique_bia_without_ios_mac_overrides(lab):
+    router = lab._els[lab.add_device("2911", "R9")]
+    switch = lab._els[lab.add_device("2960-24TT", "SW9")]
+
+    port_macs = [
+        (port.findtext("MACADDRESS"), port.findtext("BIA"))
+        for device in (router, switch)
+        for port in device.find("ENGINE").iter("PORT")
+        if port.findtext("MACADDRESS") or port.findtext("BIA")
+    ]
+    active_macs = [mac for mac, _ in port_macs]
+    burned_in = [bia for _, bia in port_macs]
+
+    assert all(mac == bia for mac, bia in port_macs)
+    assert len(active_macs) == len(set(active_macs))
+    assert len(burned_in) == len(set(burned_in))
+
+
+def test_installed_module_ports_use_bia_as_default_mac(lab):
+    device_id = lab.add_device("2911", "R9")
+    lab.modules["TestModule"] = (
+        "<SLOT><TYPE>eInterfaceCard</TYPE><MODULE><TYPE>eInterfaceCard</TYPE>"
+        "<MODEL>TestModule</MODEL><PORT><TYPE>eCopperFastEthernet</TYPE>"
+        "<MACADDRESS>0000.0000.0001</MACADDRESS>"
+        "<BIA>0000.0000.0002</BIA></PORT></MODULE></SLOT>"
+    )
+
+    lab.install_module(device_id, "TestModule", slot=1)
+
+    module = next(
+        module for module in lab._els[device_id].findall(".//MODULE")
+        if module.findtext("MODEL") == "TestModule"
+    )
+    module_port = module.find("PORT")
+    assert module_port is not None
+    assert module_port.findtext("MACADDRESS") == module_port.findtext("BIA")
+
+
 def test_unnamed_non_network_device_requires_name(lab):
     with pytest.raises(ValueError, match="device name is required"):
         lab.add_device("PC-PT")
 
 
-def test_save_watermarks_all_ios_routers_and_switches(lab, monkeypatch):
+def test_save_sets_hostnames_and_removes_domain_name_commands(lab, monkeypatch):
     lab.add_device(
         "2911", "R9",
-        ios_config=["hostname R9", "ip domain-name old.example", "end"],
+        ios_config=[
+            "hostname R9",
+            "ip domain-name old.example",
+            "no ip domain-name",
+            "end",
+        ],
     )
     encoded = {}
     monkeypatch.setattr(
@@ -122,11 +166,22 @@ def test_save_watermarks_all_ios_routers_and_switches(lab, monkeypatch):
         engine = device.find("ENGINE")
         model = engine.find("TYPE").get("model", "")
         if lab_api.kind_for_model(model) in lab_api._IOS_DEVICE_KINDS:
+            display_name = engine.findtext("NAME")
+            hostnames = [
+                (line.text or "").strip()
+                for line in engine.findall("RUNNINGCONFIG/LINE")
+                if (line.text or "").strip().lower().startswith("hostname ")
+            ]
             commands = [
                 line.text for line in engine.findall("RUNNINGCONFIG/LINE")
-                if (line.text or "").strip().lower().startswith("ip domain-name")
+                if re.match(
+                    r"(?:no\s+)?ip domain-name(?:\s|$)",
+                    (line.text or "").strip(),
+                    re.I,
+                )
             ]
-            assert commands == ["ip domain-name gjay.co.uk"]
+            assert hostnames == [f"hostname {display_name}"]
+            assert commands == []
         else:
             assert not any(
                 (line.text or "").strip().lower().startswith("ip domain-name")
@@ -242,3 +297,104 @@ def test_prune_seed_devices_keeps_generated_links(lab):
     assert links is not None and len(links.findall("LINK")) == 1
     cab = links.find("LINK/CABLE")
     assert cab.findtext("FROM") == a and cab.findtext("TO") == b
+
+
+# --------------------------------------------------------------------------- #
+# automatic cable annotations
+# --------------------------------------------------------------------------- #
+def test_link_adds_workspace_note_with_interfaces_and_subnet(lab):
+    lab.prune_seed_devices()
+    r1 = lab.add_device(
+        "2911", "R1",
+        ios_config=["interface GigabitEthernet0/0",
+                    " ip address 10.0.12.1 255.255.255.252",
+                    " no shutdown", "end"],
+    )
+    r2 = lab.add_device(
+        "2911", "R2",
+        ios_config=["interface GigabitEthernet0/0",
+                    " ip address 10.0.12.2 255.255.255.252",
+                    " no shutdown", "end"],
+    )
+
+    lab.link(r1, "GigabitEthernet0/0", r2, "GigabitEthernet0/0")
+
+    note = lab._pw.find("NOTES/NOTE")
+    assert note is not None
+    assert note.findtext("TEXT") == (
+        "R1 GigabitEthernet0/0 <-> R2 GigabitEthernet0/0\n10.0.12.0/30"
+    )
+    assert note.findtext("NOTECLUSTERID") == "1-1"
+    assert note.get("uuid", "").startswith("{")
+
+
+def test_link_annotation_resolves_hwic_access_vlan_to_svi_subnet(lab):
+    lab.prune_seed_devices()
+    r1 = lab.add_device(
+        "2911", "R1",
+        ios_config=["interface FastEthernet0/1/0",
+                    " switchport mode access",
+                    " switchport access vlan 12",
+                    "interface Vlan12",
+                    " ip address 10.0.12.1 255.255.255.252",
+                    " no shutdown", "end"],
+    )
+    r2 = lab.add_device(
+        "2911", "R2",
+        ios_config=["interface GigabitEthernet0/0",
+                    " ip address 10.0.12.2 255.255.255.252",
+                    " no shutdown", "end"],
+    )
+
+    lab.link(r1, "FastEthernet0/1/0", r2, "GigabitEthernet0/0")
+
+    assert lab._pw.findtext("NOTES/NOTE/TEXT") == (
+        "R1 FastEthernet0/1/0 <-> R2 GigabitEthernet0/0\n10.0.12.0/30"
+    )
+
+
+def test_link_annotation_can_override_subnet_and_position(lab):
+    lab.prune_seed_devices()
+    a = lab.add_device("2911", "R1")
+    b = lab.add_device("2911", "R2")
+
+    lab.link(a, "GigabitEthernet0/0", b, "GigabitEthernet0/0",
+             subnet="198.51.100.0/30", label_position=(321, 456))
+
+    note = lab._pw.find("NOTES/NOTE")
+    assert note is not None
+    assert note.findtext("TEXT").endswith("\n198.51.100.0/30")
+    assert (note.findtext("X"), note.findtext("Y")) == ("321", "456")
+
+
+def test_link_annotation_can_be_disabled_per_link_or_lab(lab):
+    lab.prune_seed_devices()
+    a = lab.add_device("2911", "R1")
+    b = lab.add_device("2911", "R2")
+    c = lab.add_device("2911", "R3")
+    d = lab.add_device("2911", "R4")
+
+    lab.link(a, "GigabitEthernet0/0", b, "GigabitEthernet0/0", annotate=False)
+    lab.link(c, "GigabitEthernet0/0", d, "GigabitEthernet0/0")
+    assert len(lab._pw.findall("NOTES/NOTE")) == 1
+
+    models, modules = lab_api.load_templates(str(TOOLS / "device_templates.json"))
+    quiet_lab = lab_api.Lab(
+        str(TOOLS / "network_seed.xml"), models, modules, annotate_links=False
+    )
+    quiet_lab.prune_seed_devices()
+    a = quiet_lab.add_device("2911", "R1")
+    b = quiet_lab.add_device("2911", "R2")
+    quiet_lab.link(a, "GigabitEthernet0/0", b, "GigabitEthernet0/0")
+    assert not quiet_lab._pw.findall("NOTES/NOTE")
+
+
+def test_pruning_seed_devices_removes_link_annotations(lab):
+    seed_id = lab.initial_id()
+    generated = lab.add_device("2911", "R9")
+    lab.link(seed_id, "GigabitEthernet0/0", generated, "GigabitEthernet0/0")
+    assert len(lab._pw.findall("NOTES/NOTE")) == 1
+
+    lab.prune_seed_devices()
+
+    assert lab._pw.find("NOTES/NOTE") is None

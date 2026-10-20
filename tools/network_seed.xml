@@ -4125,7 +4125,6 @@ Password: &lt;input type="password" name="pw" id="pw" value="" size="20">&lt;br>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>ip ssh version 2</LINE>
-      <LINE>ip domain-name cyberpatriot.local</LINE>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>spanning-tree mode pvst</LINE>
@@ -4252,7 +4251,6 @@ Password: &lt;input type="password" name="pw" id="pw" value="" size="20">&lt;br>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>ip ssh version 2</LINE>
-      <LINE>ip domain-name cyberpatriot.local</LINE>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>spanning-tree mode pvst</LINE>
@@ -4831,7 +4829,6 @@ Password: &lt;input type="password" name="pw" id="pw" value="" size="20">&lt;br>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>ip ssh version 2</LINE>
-      <LINE>ip domain-name cyberpatriot.local</LINE>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>spanning-tree mode pvst</LINE>
@@ -4950,7 +4947,6 @@ Password: &lt;input type="password" name="pw" id="pw" value="" size="20">&lt;br>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>ip ssh version 2</LINE>
-      <LINE>ip domain-name cyberpatriot.local</LINE>
       <LINE>!</LINE>
       <LINE>!</LINE>
       <LINE>spanning-tree mode pvst</LINE>

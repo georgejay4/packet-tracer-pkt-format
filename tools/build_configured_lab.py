@@ -109,7 +109,7 @@ class Builder:
         rc = ET.SubElement(eng, "RUNNINGCONFIG")
         for L in lines:
             ET.SubElement(rc, "LINE").text = L
-        lab_api.ensure_ios_domain_name(el)
+        lab_api.ensure_ios_hostname(el)
 
     @staticmethod
     def pc_ip(el, ip, mask, gw):

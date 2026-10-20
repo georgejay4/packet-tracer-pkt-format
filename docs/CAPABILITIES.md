@@ -12,6 +12,7 @@ items were tested by generating a file and loading it in Packet Tracer.
 | Modules | `<ENGINE><MODULE>/<SLOT>/<MODULE><MODEL>` | ✅ verified |
 | Copper cable | `<LINK><TYPE>eCopper`, `eStraightThrough` | ✅ verified |
 | Serial cable | `<LINK><TYPE>eSerial` + `DCEDEV/DCEPORT` | ✅ cable loads |
+| Cable workspace notes | `<PHYSICALWORKSPACE><NOTES><NOTE>` | ✅ verified; `Lab.link()` adds interface/subnet labels by default |
 | IOS running-config | `<ENGINE><RUNNINGCONFIG><LINE>` | ✅ verified |
 | End-device IP / DHCP | NIC `<PORT><IP>/<SUBNET>/<PORT_GATEWAY>/<PORT_DHCP_ENABLE>` | ✅ verified |
 | OS image / boot | `<OS_IMAGE>`, `<OS_FILE_NAME>`, config register | 📖 read (set untested) |
@@ -35,6 +36,14 @@ lab.link(r, "GigabitEthernet0/0", sw, "GigabitEthernet1/0/1" if False else "Giga
 lab.link(sw, "FastEthernet0/1", pc, "FastEthernet0")
 lab.save("lab.pkt")
 ```
+
+`Lab.link()` adds a native Packet Tracer workspace note for each cable. Notes
+identify both devices and interfaces and include the IPv4 subnet when it can be
+read from either endpoint's IOS interface (including an HWIC access VLAN's
+SVI) or end-device NIC. Pass `subnet="10.0.0.0/30"` to provide or override the
+subnet, `label_position=(x, y)` to set the note's logical-canvas coordinates,
+or `annotate=False` to suppress one note. To disable notes for a whole lab,
+construct it with `Lab(seed, models, modules, annotate_links=False)`.
 
 Routers default to `R<number>` and switches to `SW<number>`. The authoring API
 chooses the first unused number, including names inherited from the seed. Pass
@@ -117,7 +126,9 @@ colour is initial-state behaviour, not a generation defect.
 ## 6. Load requirements (checklist)
 
 1. unique `<ENGINE>/<SAVE_REF_ID>` per device;
-2. unique `MACADDRESS`/`BIA` per port;
+2. unique `MACADDRESS`/`BIA` per port; keep each port's `MACADDRESS` equal to
+   its `BIA` so Packet Tracer does not materialize an IOS `mac-address`
+   override in `show running-config`;
 3. valid `<PHYSICAL>` scene placement;
 4. every `<LINK>` endpoint resolves (id + existing port).
 

@@ -35,10 +35,10 @@ Inside `<ENGINE>`:
 `<LINE>`.  **Packet Tracer applies it when the file loads** — so you can
 configure a device entirely by writing lines.
 
-The shared `tools/lab_api.py` authoring path enforces the project watermark
-`ip domain-name gjay.co.uk` on every IOS router and switch when a lab is saved.
-It replaces any other `ip domain-name` command and does not add IOS commands to
-end devices.
+The shared `tools/lab_api.py` authoring path aligns IOS router and switch
+hostnames with their Packet Tracer display names. It removes `ip domain-name`
+and `no ip domain-name` commands from their default running-configs. End
+devices do not receive IOS commands.
 
 Verified: two builds differing only by
 
